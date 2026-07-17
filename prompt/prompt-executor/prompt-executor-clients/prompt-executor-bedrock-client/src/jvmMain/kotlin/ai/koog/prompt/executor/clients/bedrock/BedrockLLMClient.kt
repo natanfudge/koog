@@ -264,6 +264,10 @@ public class BedrockLLMClient @JvmOverloads constructor(
         model: LLModel,
         tools: List<ToolDescriptor>
     ): Message.Assistant {
+        require(prompt.messages.all { message -> message.parts.all { it is MessagePart.Text } }) {
+            "BedrockLLMClient with apiMethod=BedrockAPIMethod.InvokeModel only supports text content. " +
+                "For other content types, use apiMethod=BedrockAPIMethod.Converse."
+        }
         val modelFamily = getBedrockModelFamily(model)
         val requestBody = createRequestBody(prompt, model, tools)
         val invokeRequest = InvokeModelRequest {

@@ -438,7 +438,7 @@ class GoogleLLMClientTest {
     }
 
     @Test
-    fun `createGoogleRequest attaches signature from Reasoning and fallback to subsequent calls`() {
+    fun `createGoogleRequest attaches signature only to first parallel call`() {
         val client = GoogleLLMClient(httpClientFactory = KtorKoogHttpClient.Factory(), apiKey = "test")
         val request = client.createGoogleRequest(
             Prompt(
@@ -466,11 +466,11 @@ class GoogleLLMClientTest {
         val fc2 = callsParts[1] as GooglePart.FunctionCall
 
         fc1.thoughtSignature shouldBe "my-sig"
-        fc2.thoughtSignature shouldBe "context_engineering_is_the_way_to_go"
+        fc2.thoughtSignature shouldBe null
     }
 
     @Test
-    fun `createGoogleRequest uses configurable fallback thought signature`() {
+    fun `createGoogleRequest does not invent a thought signature`() {
         val client = GoogleLLMClient(
             apiKey = "test",
             settings = GoogleClientSettings(fallbackThoughtSignature = "custom-fallback"),
@@ -494,7 +494,7 @@ class GoogleLLMClientTest {
         )
 
         val call = request.contents[1].parts!!.single() as GooglePart.FunctionCall
-        call.thoughtSignature shouldBe "custom-fallback"
+        call.thoughtSignature shouldBe null
     }
 
     @Test
@@ -532,6 +532,10 @@ class GoogleLLMClientTest {
                     GooglePart.Text(
                         text = "I am thinking...",
                         thought = true,
+                        thoughtSignature = null
+                    ),
+                    GooglePart.FunctionCall(
+                        functionCall = GoogleData.FunctionCall(name = "tool", args = buildJsonObject {}),
                         thoughtSignature = "thought-sig"
                     )
                 )
@@ -541,11 +545,12 @@ class GoogleLLMClientTest {
 
         val response = client.processGoogleCandidate(candidate, ResponseMetaInfo.Empty)
 
-        response.parts shouldHaveSize 1
+        response.parts shouldHaveSize 2
         response.parts[0].shouldBeInstanceOf<MessagePart.Reasoning>()
         val reasoning = response.parts[0] as MessagePart.Reasoning
         reasoning.content.single() shouldBe "I am thinking..."
         reasoning.encrypted shouldBe "thought-sig"
+        response.parts[1].shouldBeInstanceOf<MessagePart.Tool.Call>()
     }
 
     @Test
@@ -649,6 +654,7 @@ class GoogleLLMClientTest {
                     Message.Assistant(
                         parts = listOf(
                             MessagePart.Reasoning(encrypted = "prev-sig", content = "Previous thought"),
+                            MessagePart.Text("Done"),
                         ),
                         metaInfo = ResponseMetaInfo.Empty
                     ),
@@ -662,11 +668,17 @@ class GoogleLLMClientTest {
         request.contents shouldHaveSize 2
         val thoughtContent = request.contents[1]
         thoughtContent.role shouldBe "model"
-        thoughtContent.parts!!.single().shouldBeInstanceOf<GooglePart.Text>()
-        val textPart = thoughtContent.parts.single() as GooglePart.Text
+        val thoughtParts = requireNotNull(thoughtContent.parts)
+        thoughtParts shouldHaveSize 2
+        thoughtParts[0].shouldBeInstanceOf<GooglePart.Text>()
+        val textPart = thoughtParts[0] as GooglePart.Text
         textPart.text shouldBe "Previous thought"
         textPart.thought shouldBe true
-        textPart.thoughtSignature shouldBe "prev-sig"
+        textPart.thoughtSignature shouldBe null
+
+        val assistantPart = thoughtParts[1] as GooglePart.Text
+        assistantPart.text shouldBe "Done"
+        assistantPart.thoughtSignature shouldBe "prev-sig"
     }
 
     @Test

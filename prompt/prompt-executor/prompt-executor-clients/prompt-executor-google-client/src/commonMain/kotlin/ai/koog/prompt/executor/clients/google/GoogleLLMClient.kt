@@ -322,7 +322,7 @@ public open class GoogleLLMClient @JvmOverloads constructor(
                 }
 
                 is Message.Assistant -> {
-                    contents.add(message.toGoogleContent(model))
+                    contents.add(message.toGoogleContent())
                 }
             }
         }
@@ -412,8 +412,9 @@ public open class GoogleLLMClient @JvmOverloads constructor(
         )
     }
 
-    private fun Message.Assistant.toGoogleContent(model: LLModel): GoogleContent {
+    private fun Message.Assistant.toGoogleContent(): GoogleContent {
         var lastSignature: String? = null
+        val hasToolCalls = parts.any { it is MessagePart.Tool.Call }
 
         return GoogleContent(
             role = "model",
@@ -421,27 +422,25 @@ public open class GoogleLLMClient @JvmOverloads constructor(
                 parts.forEach { part ->
                     when (part) {
                         is MessagePart.Reasoning -> {
-                            if (part.content.isEmpty()) {
-                                // If the reasoning message is empty, it only contains the signature for the next message.
-                                // Saving the signature for the next message and do not adding reasoning part.
-                                lastSignature = part.encrypted
-                            } else {
-                                // If the reasoning message is not empty, it contains the actual reasoning content.
-                                // TODO replace exception with if
+                            lastSignature = part.encrypted
+                            if (part.content.isNotEmpty()) {
                                 add(
                                     GooglePart.Text(
                                         text = part.content.singleOrNull()
-                                            // TODO: Improve exception messages
                                             ?: throw IllegalArgumentException("Only single content is required for reasoning messages"),
                                         thought = true,
-                                        thoughtSignature = part.encrypted
+                                        // Gemini places the signature on the model text or the first function call,
+                                        // not on the thought-summary part itself.
+                                        thoughtSignature = null
                                     )
                                 )
                             }
                         }
 
                         is MessagePart.Text -> {
-                            add(GooglePart.Text(part.text))
+                            val signature = if (hasToolCalls) null else lastSignature
+                            if (signature != null) lastSignature = null
+                            add(GooglePart.Text(part.text, thoughtSignature = signature))
                         }
 
                         is MessagePart.Attachment -> {
@@ -450,18 +449,8 @@ public open class GoogleLLMClient @JvmOverloads constructor(
                         }
 
                         is MessagePart.Tool.Call -> {
-                            // Use signature from preceding Reasoning message
                             val signature = lastSignature
-                            lastSignature = null // Consume: only first call gets the signature
-
-                            // For thinking models (e.g., Gemini 3), thought_signature is required for all function calls.
-                            // If no signature is available from a Reasoning message, use the official workaround dummy signature.
-                            // See: https://ai.google.dev/gemini-api/docs/thought-signatures
-                            val effectiveSignature = signature ?: if (model.supports(LLMCapability.Thinking)) {
-                                settings.fallbackThoughtSignature
-                            } else {
-                                null
-                            }
+                            lastSignature = null
 
                             add(
                                 GooglePart.FunctionCall(
@@ -470,7 +459,8 @@ public open class GoogleLLMClient @JvmOverloads constructor(
                                         name = part.tool,
                                         args = part.argsJson
                                     ),
-                                    thoughtSignature = effectiveSignature
+                                    // For parallel calls Gemini attaches the signature only to the first call.
+                                    thoughtSignature = signature
                                 )
                             )
                         }
@@ -682,15 +672,16 @@ public open class GoogleLLMClient @JvmOverloads constructor(
         candidate: GoogleCandidate,
         metaInfo: ResponseMetaInfo
     ): Message.Assistant {
+        val googleParts = candidate.content?.parts.orEmpty()
+        val thoughtSignature = googleParts.firstNotNullOfOrNull { it.thoughtSignature }
+        val hasThoughtSummary = googleParts.any { it is GooglePart.Text && it.thought == true }
         val parts = buildList {
-            candidate.content?.parts.orEmpty().forEach { part ->
-                val signature = part.thoughtSignature
+            if (!hasThoughtSummary && thoughtSignature != null) {
+                add(MessagePart.Reasoning(content = emptyList(), encrypted = thoughtSignature))
+            }
+
+            googleParts.forEach { part ->
                 val isThought = part.thought == true
-                if (signature != null && !isThought) {
-                    // If the part has signature but is not a thought,
-                    // adding a Reasoning part with signature and empty reasoining content.
-                    add(MessagePart.Reasoning(content = listOf(), encrypted = signature))
-                }
 
                 when (part) {
                     is GooglePart.Text -> {
@@ -699,7 +690,7 @@ public open class GoogleLLMClient @JvmOverloads constructor(
                             add(
                                 MessagePart.Reasoning(
                                     content = part.text,
-                                    encrypted = signature,
+                                    encrypted = thoughtSignature,
                                 )
                             )
                         } else {
