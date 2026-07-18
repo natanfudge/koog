@@ -3,6 +3,7 @@
 import ai.koog.gradle.publish.maven.configureJvmJarManifest
 import ai.koog.gradle.tests.configureTests
 import ai.koog.gradle.xcframework.XCFrameworkConfig.configureXCFrameworkIfRequested
+import com.android.build.api.attributes.AgpVersionAttr
 import jetbrains.sign.GpgSignSignatoryProvider
 import org.jetbrains.kotlin.gradle.ExperimentalWasmDsl
 import org.jetbrains.kotlin.gradle.dsl.abi.ExperimentalAbiValidation
@@ -168,6 +169,22 @@ android {
     compileOptions {
         sourceCompatibility = JavaVersion.VERSION_17
         targetCompatibility = JavaVersion.VERSION_17
+    }
+}
+
+// Composite consumers select Android project variants directly, so AGP's exact-version
+// attribute must describe the consuming build rather than this build's publication toolchain.
+// Published artifacts are unaffected because the override is enabled only by the composite host.
+System.getProperty("koog.composite.consumerAgpVersion")?.let { consumerAgpVersion ->
+    afterEvaluate {
+        configurations.configureEach {
+            if (attributes.getAttribute(AgpVersionAttr.ATTRIBUTE) != null) {
+                attributes.attribute(
+                    AgpVersionAttr.ATTRIBUTE,
+                    objects.named(AgpVersionAttr::class.java, consumerAgpVersion),
+                )
+            }
+        }
     }
 }
 
